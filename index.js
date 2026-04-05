@@ -69,6 +69,19 @@ function sanitize(text) {
   return out;
 }
 
+/**
+ * Unescape JSON string escapes that leak into prompts from serialized
+ * tool results and message history.  Converts literal \n → newline,
+ * \" → ", \t → tab, \\ → \, etc.
+ */
+function unescapeJsonLeaks(text) {
+  return text
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
+}
+
 // ---------------------------------------------------------------------------
 // Messages API → text prompt conversion
 // ---------------------------------------------------------------------------
@@ -300,7 +313,7 @@ function runClaude(prompt, systemPrompt, model) {
     let tmpFile = null;
     if (systemPrompt) {
       tmpFile = join(tmpdir(), `ccp-sys-${Date.now()}-${uid(8)}.txt`);
-      writeFileSync(tmpFile, sanitize(systemPrompt));
+      writeFileSync(tmpFile, unescapeJsonLeaks(sanitize(systemPrompt)));
       args.push("--system-prompt-file", tmpFile);
     }
 
@@ -320,7 +333,7 @@ function runClaude(prompt, systemPrompt, model) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    proc.stdin.write(sanitize(prompt));
+    proc.stdin.write(unescapeJsonLeaks(sanitize(prompt)));
     proc.stdin.end();
 
     let stdout = "";
@@ -415,7 +428,7 @@ async function handleRequest(req, res) {
   }
 
   const model = body.model || "claude-opus-4-6";
-  const prompt = sanitize(messagesToPrompt(body.messages || []));
+  const prompt = unescapeJsonLeaks(sanitize(messagesToPrompt(body.messages || [])));
   const systemPrompt = buildSystemPrompt(body);
   const streaming = body.stream === true;
 
