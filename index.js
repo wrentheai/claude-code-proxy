@@ -298,13 +298,25 @@ function writeSSE(res, model, result) {
 // ---------------------------------------------------------------------------
 // Claude Code runner (serialized — one claude -p at a time)
 // ---------------------------------------------------------------------------
-let _queue = Promise.resolve();
+let _busy = false;
+const _pending = [];
 
 function runClaudeSerialized(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
-    _queue = _queue
-      .then(() => _runClaude(prompt, systemPrompt, model))
-      .then(resolve, reject);
+    const run = () =>
+      _runClaude(prompt, systemPrompt, model).then(resolve, reject).finally(() => {
+        _busy = false;
+        const next = _pending.shift();
+        if (next) { _busy = true; next(); }
+      });
+
+    if (!_busy) {
+      _busy = true;
+      run();
+    } else {
+      console.log("[proxy] queued (position %d)", _pending.length + 1);
+      _pending.push(run);
+    }
   });
 }
 
