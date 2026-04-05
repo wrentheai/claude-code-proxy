@@ -93,22 +93,11 @@ function messagesToPrompt(messages) {
     if (typeof msg.content === "string") {
       text = msg.content;
     } else if (Array.isArray(msg.content)) {
+      // Only include text blocks — strip tool_use and tool_result artifacts
+      // so they don't leak into the visible conversation
       text = msg.content
-        .map((block) => {
-          if (block.type === "text") return block.text;
-          if (block.type === "tool_use")
-            return `[Tool call: ${block.name}(${JSON.stringify(block.input)})]`;
-          if (block.type === "tool_result") {
-            const c =
-              typeof block.content === "string"
-                ? block.content
-                : Array.isArray(block.content)
-                  ? block.content.map((b) => b.text || "").join("\n")
-                  : "";
-            return `[Tool result for ${block.tool_use_id}: ${c}]`;
-          }
-          return "";
-        })
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
         .filter(Boolean)
         .join("\n");
     }
