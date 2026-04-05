@@ -1,0 +1,29 @@
+{
+  "name": "claude-code-proxy",
+  "version": "1.0.0",
+  "description": "Local Anthropic API proxy that routes through Claude Code CLI — use your subscription, no API keys needed",
+  "type": "module",
+  "bin": {
+    "claude-code-proxy": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "api",
+    "openclaw"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ]
+}
