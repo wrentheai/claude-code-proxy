@@ -85,6 +85,8 @@ function unescapeJsonLeaks(text) {
 // ---------------------------------------------------------------------------
 // Messages API → text prompt conversion
 // ---------------------------------------------------------------------------
+const TOOL_RESULT_MAX = 300; // max chars per tool result in prompt
+
 function messagesToPrompt(messages) {
   const parts = [];
   for (const msg of messages) {
@@ -93,11 +95,25 @@ function messagesToPrompt(messages) {
     if (typeof msg.content === "string") {
       text = msg.content;
     } else if (Array.isArray(msg.content)) {
-      // Only include text blocks — strip tool_use and tool_result artifacts
-      // so they don't leak into the visible conversation
       text = msg.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
+        .map((block) => {
+          if (block.type === "text") return block.text;
+          if (block.type === "tool_use") return `[Used tool: ${block.name}]`;
+          if (block.type === "tool_result") {
+            let c =
+              typeof block.content === "string"
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content.map((b) => b.text || "").join("\n")
+                  : "";
+            // Truncate large results (JSON blobs, process output, etc.)
+            if (c.length > TOOL_RESULT_MAX) {
+              c = c.slice(0, TOOL_RESULT_MAX) + "...";
+            }
+            return c ? `[Tool result: ${c}]` : "";
+          }
+          return "";
+        })
         .filter(Boolean)
         .join("\n");
     }
