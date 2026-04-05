@@ -33,7 +33,7 @@ function arg(name, fallback) {
 
 const PORT = parseInt(arg("port", "8082"), 10);
 const CLAUDE_BIN = arg("claude", findClaude());
-const TIMEOUT_MS = parseInt(arg("timeout", "300000"), 10);
+const TIMEOUT_MS = parseInt(arg("timeout", "120000"), 10);
 
 function findClaude() {
   try {
@@ -296,9 +296,19 @@ function writeSSE(res, model, result) {
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code runner
+// Claude Code runner (serialized — one claude -p at a time)
 // ---------------------------------------------------------------------------
-function runClaude(prompt, systemPrompt, model) {
+let _queue = Promise.resolve();
+
+function runClaudeSerialized(prompt, systemPrompt, model) {
+  return new Promise((resolve, reject) => {
+    _queue = _queue
+      .then(() => _runClaude(prompt, systemPrompt, model))
+      .then(resolve, reject);
+  });
+}
+
+function _runClaude(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
     const args = [
       "-p",
@@ -446,7 +456,7 @@ async function handleRequest(req, res) {
   );
 
   try {
-    const result = await runClaude(prompt, systemPrompt, model);
+    const result = await runClaudeSerialized(prompt, systemPrompt, model);
     const ms = Date.now() - t0;
     console.log(
       "[proxy] %s %dms tokens=%d→%d $%s%s",
