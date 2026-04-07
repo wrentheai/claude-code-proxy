@@ -157,10 +157,7 @@ async function refreshToken(refreshTok) {
 }
 
 async function getAccessToken() {
-  if (cachedCreds && cachedCreds.expiresAt > Date.now() + 120_000) {
-    return cachedCreds.accessToken;
-  }
-
+  // Always re-read keychain — Claude Code may have refreshed the token
   const kc = readKeychain();
   if (!kc) throw new Error("No Claude Code credentials in keychain");
 
@@ -169,7 +166,7 @@ async function getAccessToken() {
     return kc.accessToken;
   }
 
-  // Expired — refresh
+  // Expired — try to refresh
   const refreshTok = kc.refreshToken || cachedCreds?.refreshToken;
   if (!refreshTok) throw new Error("No refresh token available");
 
