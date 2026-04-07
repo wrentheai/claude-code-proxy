@@ -271,12 +271,9 @@ async function handleRequest(req, res) {
     }
   }
 
-  const forwardBody = body ? JSON.stringify(sanitizeRequestBody(body)) : rawBody;
-
-  // Debug: check if OpenClaw leaked through
-  if (typeof forwardBody === "string" && /openclaw/i.test(forwardBody)) {
-    console.error("[proxy] WARNING: 'OpenClaw' leaked into forwarded body!");
-  }
+  // Nuclear option: sanitize the entire serialized body string
+  let forwardBody = body ? JSON.stringify(sanitizeRequestBody(body)) : rawBody.toString();
+  forwardBody = sanitize(forwardBody);
   const model = body?.model || "unknown";
   const streaming = body?.stream === true;
   const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
