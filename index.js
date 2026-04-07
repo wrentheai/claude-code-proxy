@@ -118,6 +118,7 @@ function runClaude(prompt, systemPrompt, model) {
       "--verbose",
       "--no-session-persistence",
       "--dangerously-skip-permissions",
+      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
     ];
 
     if (model?.includes("opus")) args.push("--model", "opus");
