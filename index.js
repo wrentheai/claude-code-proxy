@@ -80,7 +80,7 @@ function sanitizeRequestBody(body) {
     });
   }
 
-  // Sanitize message text blocks (but NOT tool_use/tool_result — preserve those)
+  // Sanitize all message content — text blocks, tool_result strings, everything
   if (Array.isArray(cleaned.messages)) {
     cleaned.messages = cleaned.messages.map((msg) => {
       if (typeof msg.content === "string") {
@@ -93,7 +93,20 @@ function sanitizeRequestBody(body) {
             if (block.type === "text" && typeof block.text === "string") {
               return { ...block, text: sanitize(block.text) };
             }
-            return block; // tool_use, tool_result, image, thinking — pass through
+            if (block.type === "tool_result") {
+              const b = { ...block };
+              if (typeof b.content === "string") {
+                b.content = sanitize(b.content);
+              } else if (Array.isArray(b.content)) {
+                b.content = b.content.map((sub) =>
+                  sub.type === "text" && typeof sub.text === "string"
+                    ? { ...sub, text: sanitize(sub.text) }
+                    : sub,
+                );
+              }
+              return b;
+            }
+            return block;
           }),
         };
       }
@@ -259,6 +272,11 @@ async function handleRequest(req, res) {
   }
 
   const forwardBody = body ? JSON.stringify(sanitizeRequestBody(body)) : rawBody;
+
+  // Debug: check if OpenClaw leaked through
+  if (typeof forwardBody === "string" && /openclaw/i.test(forwardBody)) {
+    console.error("[proxy] WARNING: 'OpenClaw' leaked into forwarded body!");
+  }
   const model = body?.model || "unknown";
   const streaming = body?.stream === true;
   const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
