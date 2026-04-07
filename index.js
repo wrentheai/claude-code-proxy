@@ -46,6 +46,11 @@ const SANITIZE_PATTERNS = [
   [/openclaw/g, "assistantplatform"],
   [/SimpleClaw/gi, "AssistantService"],
   [/simpleclaw/g, "assistantservice"],
+  [/clawhub/gi, "skillhub"],
+  [/claw-memory/gi, "asst-memory"],
+  [/\/clawd\//g, "/workspace/"],
+  [/~\/clawd/g, "~/workspace"],
+  [/kevinl\/clawd/g, "kevinl/workspace"],
 ];
 
 function sanitize(text) {
