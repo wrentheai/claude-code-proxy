@@ -272,7 +272,7 @@ async function handleRequest(req, res) {
 
   // Inject billing header and sanitize
   const preparedBody = injectBillingHeader(body);
-  const forwardBody = sanitize(JSON.stringify(preparedBody));
+  let forwardBody = sanitize(JSON.stringify(preparedBody));
 
   // Cap tools at 10 — Anthropic rejects OAuth requests with >10 tools
   if (body && Array.isArray(body.tools) && body.tools.length > 10) {
