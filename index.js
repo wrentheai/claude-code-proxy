@@ -107,14 +107,29 @@ async function captureBillingHeader() {
         stdio: ["pipe", "pipe", "pipe"],
       });
 
+      // Kill probe after we capture the header or after timeout
+      const killTimer = setTimeout(() => {
+        proc.kill("SIGKILL");
+      }, 20_000);
+
       proc.on("close", () => {
+        clearTimeout(killTimer);
         sniffServer.close(() => {
           billingHeader ? resolve(billingHeader) : reject(new Error("No billing header captured"));
         });
       });
       proc.on("error", () => {
+        clearTimeout(killTimer);
         sniffServer.close(() => reject(new Error("claude probe failed")));
       });
+
+      // Also kill early once we have the header
+      const checkInterval = setInterval(() => {
+        if (billingHeader) {
+          clearInterval(checkInterval);
+          proc.kill();
+        }
+      }, 500);
     });
   });
 }
