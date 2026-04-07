@@ -274,10 +274,24 @@ async function handleRequest(req, res) {
   const preparedBody = injectBillingHeader(body);
   const forwardBody = sanitize(JSON.stringify(preparedBody));
 
-  // Debug: dump body for inspection
-  try { writeFileSync("/Users/kevinl/.openclaw/logs/proxy-body.json", forwardBody); } catch {}
-  if (/openclaw/i.test(forwardBody)) console.error("[proxy] LEAK: openclaw still in body");
-  if (!/billing-header/i.test(forwardBody)) console.error("[proxy] MISSING: no billing header");
+  // Cap tools at 10 — Anthropic rejects OAuth requests with >10 tools
+  if (body && Array.isArray(body.tools) && body.tools.length > 10) {
+    // Keep the most important tools, drop session management extras
+    const priority = ["Read", "Edit", "Write", "exec", "process",
+                      "web_search", "web_fetch", "memory_search", "memory_get", "session_status"];
+    const prioritySet = new Set(priority.map(n => n.toLowerCase()));
+    const kept = body.tools.filter(t => prioritySet.has(t.name.toLowerCase()));
+    // Fill remaining slots from other tools
+    for (const t of body.tools) {
+      if (kept.length >= 10) break;
+      if (!prioritySet.has(t.name.toLowerCase())) kept.push(t);
+    }
+    console.log("[proxy] Capped tools: %d → %d (%s)", body.tools.length, kept.length,
+      kept.map(t => t.name).join(", "));
+    body.tools = kept;
+    // Re-serialize with capped tools
+    forwardBody = sanitize(JSON.stringify(injectBillingHeader(body)));
+  }
 
   // Build headers
   const fwdHeaders = {};
