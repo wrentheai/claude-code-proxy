@@ -285,9 +285,22 @@ async function handleRequest(req, res) {
     body.tools = kept;
   }
 
-  // Inject billing header and sanitize (after tool cap)
+  // Inject billing header
   const preparedBody = injectBillingHeader(body);
-  const forwardBody = sanitize(JSON.stringify(preparedBody));
+
+  // Sanitize ONLY system prompt blocks — not tools, messages, or paths
+  if (Array.isArray(preparedBody.system)) {
+    preparedBody.system = preparedBody.system.map((block) => {
+      if (block.type === "text" && typeof block.text === "string") {
+        return { ...block, text: sanitize(block.text) };
+      }
+      return block;
+    });
+  } else if (typeof preparedBody.system === "string") {
+    preparedBody.system = sanitize(preparedBody.system);
+  }
+
+  const forwardBody = JSON.stringify(preparedBody);
 
   // Build headers
   const fwdHeaders = {};
