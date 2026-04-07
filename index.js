@@ -41,11 +41,10 @@ const CLAUDE_BIN = (() => {
 // Sanitization
 // ---------------------------------------------------------------------------
 const SANITIZE_PATTERNS = [
-  [/\bOpenClaw\b/gi, "Assistant Platform"],
-  [/\bopenclaw\b/g, "assistant-platform"],
-  [/\bSimpleClaw\b/gi, "Assistant Service"],
-  [/\bsimpleclaw\b/g, "assistant-service"],
-  [/\bpi-ai\b/gi, "runtime"],
+  [/OpenClaw/gi, "AssistantPlatform"],
+  [/openclaw/g, "assistantplatform"],
+  [/SimpleClaw/gi, "AssistantService"],
+  [/simpleclaw/g, "assistantservice"],
 ];
 
 function sanitize(text) {
