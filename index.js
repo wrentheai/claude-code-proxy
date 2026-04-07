@@ -17,6 +17,7 @@
 import { createServer } from "node:http";
 import { spawn, execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -70,18 +71,16 @@ async function captureBillingHeader() {
       for await (const c of req) chunks.push(c);
       const raw = Buffer.concat(chunks).toString();
 
-      // Extract billing header from system blocks
       try {
         const body = JSON.parse(raw);
         for (const block of (Array.isArray(body.system) ? body.system : [])) {
-          if ((block.text || "").includes("billing-header")) {
+          if ((block.text || "").includes("billing-header") && !billingHeader) {
             billingHeader = block.text.trim();
             console.log("[proxy] Captured billing header: %s", billingHeader.slice(0, 60) + "...");
           }
         }
       } catch {}
 
-      // Forward to real API
       const fwd = { ...req.headers };
       delete fwd.host;
       delete fwd.connection;
@@ -102,28 +101,20 @@ async function captureBillingHeader() {
 
     sniffServer.listen(0, "127.0.0.1", () => {
       const sniffPort = sniffServer.address().port;
-
       const proc = spawn(CLAUDE_BIN, ["-p", "--output-format", "json", "--tools", "", "--model", "haiku", "hi"], {
         env: { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${sniffPort}`, CLAUDE_CODE_ENTRYPOINT: "cli" },
         timeout: 30_000,
         stdio: ["pipe", "pipe", "pipe"],
       });
 
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        sniffServer.close();
-        if (billingHeader) {
-          resolve(billingHeader);
-        } else {
-          reject(new Error("Failed to capture billing header"));
-        }
-      };
-
-      proc.on("close", finish);
-      proc.on("error", () => finish());
-      setTimeout(finish, 25_000);
+      proc.on("close", () => {
+        sniffServer.close(() => {
+          billingHeader ? resolve(billingHeader) : reject(new Error("No billing header captured"));
+        });
+      });
+      proc.on("error", () => {
+        sniffServer.close(() => reject(new Error("claude probe failed")));
+      });
     });
   });
 }
@@ -263,9 +254,10 @@ async function handleRequest(req, res) {
   const preparedBody = injectBillingHeader(body);
   const forwardBody = sanitize(JSON.stringify(preparedBody));
 
-  // Debug: check for leaked terms
+  // Debug: dump body for inspection
+  try { writeFileSync("/Users/kevinl/.openclaw/logs/proxy-body.json", forwardBody); } catch {}
   if (/openclaw/i.test(forwardBody)) console.error("[proxy] LEAK: openclaw still in body");
-  if (!/billing-header/i.test(forwardBody)) console.error("[proxy] MISSING: no billing header in body");
+  if (!/billing-header/i.test(forwardBody)) console.error("[proxy] MISSING: no billing header");
 
   // Build headers
   const fwdHeaders = {};
