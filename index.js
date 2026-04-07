@@ -211,8 +211,9 @@ function injectBillingHeader(body) {
     cleaned.system = [billing];
   }
 
-  // Add thinking if not present (part of first-party request signature)
-  if (!cleaned.thinking) {
+  // Add thinking for models that support it (Opus/Sonnet 4.6+)
+  const m = (cleaned.model || "").toLowerCase();
+  if (!cleaned.thinking && (m.includes("opus") || m.includes("sonnet"))) {
     cleaned.thinking = { type: "adaptive" };
   }
 
@@ -262,6 +263,10 @@ async function handleRequest(req, res) {
   // Inject billing header and sanitize
   const preparedBody = injectBillingHeader(body);
   const forwardBody = sanitize(JSON.stringify(preparedBody));
+
+  // Debug: check for leaked terms
+  if (/openclaw/i.test(forwardBody)) console.error("[proxy] LEAK: openclaw still in body");
+  if (!/billing-header/i.test(forwardBody)) console.error("[proxy] MISSING: no billing header in body");
 
   // Build headers
   const fwdHeaders = {};
