@@ -3,25 +3,20 @@
 /**
  * claude-code-proxy
  *
- * Local Anthropic Messages API proxy that routes requests through the
- * Claude Code CLI (`claude -p`).  Uses your existing Claude Pro/Max
- * subscription — no API keys, no extra-usage credits required.
+ * Local Anthropic Messages API proxy that uses your Claude Code subscription.
+ * Forwards requests directly to the Anthropic API using the OAuth token from
+ * Claude Code's keychain, with system prompt sanitization to bypass
+ * third-party app detection.
  *
- * Any app that speaks the Anthropic Messages API can point its base URL
- * here and get responses powered by your Claude Code subscription.
+ * Supports full API features: streaming, tool use, thinking, caching.
  *
  * Usage:
  *   npx claude-code-proxy                   # default port 8082
  *   npx claude-code-proxy --port 9000       # custom port
- *   npx claude-code-proxy --claude /path/to/claude  # custom binary
  */
 
 import { createServer } from "node:http";
-import { spawn, execSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { writeFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { execSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -32,26 +27,20 @@ function arg(name, fallback) {
 }
 
 const PORT = parseInt(arg("port", "8082"), 10);
-const CLAUDE_BIN = arg("claude", findClaude());
-const TIMEOUT_MS = parseInt(arg("timeout", "120000"), 10);
+const ANTHROPIC_API = "https://api.anthropic.com";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
-function findClaude() {
-  try {
-    return execSync("which claude", { encoding: "utf-8" }).trim();
-  } catch {
-    return "claude"; // hope it's in PATH
-  }
-}
+// Keychain config — auto-detect account
+const KEYCHAIN_SERVICE = "Claude Code-credentials";
+const KEYCHAIN_ACCOUNTS = ["Claude Code", process.env.USER, "default"];
 
 // ---------------------------------------------------------------------------
 // Third-party detection bypass
 //
-// Anthropic's API pattern-matches system prompts for known third-party app
-// identifiers and reclassifies the request as "third-party", which draws
-// from extra-usage credits instead of plan limits.
-//
-// We replace these identifiers with neutral terms before forwarding.
-// Add your own patterns here if you hit the same issue with other tools.
+// Anthropic pattern-matches system prompts for known third-party app
+// identifiers and reclassifies the request to draw from extra-usage
+// credits instead of plan limits. We sanitize these before forwarding.
 // ---------------------------------------------------------------------------
 const SANITIZE_PATTERNS = [
   [/\bOpenClaw\b/gi, "Assistant Platform"],
@@ -62,6 +51,7 @@ const SANITIZE_PATTERNS = [
 ];
 
 function sanitize(text) {
+  if (!text) return text;
   let out = text;
   for (const [re, replacement] of SANITIZE_PATTERNS) {
     out = out.replace(re, replacement);
@@ -70,350 +60,130 @@ function sanitize(text) {
 }
 
 /**
- * Unescape JSON string escapes that leak into prompts from serialized
- * tool results and message history.  Converts literal \n → newline,
- * \" → ", \t → tab, \\ → \, etc.
+ * Deep-sanitize a request body — cleans system prompt and message text
+ * of third-party identifiers while preserving all API structure
+ * (tools, tool_use, tool_result, thinking, caching, etc.)
  */
-function unescapeJsonLeaks(text) {
-  return text
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, "\\");
-}
+function sanitizeRequestBody(body) {
+  const cleaned = { ...body };
 
-// ---------------------------------------------------------------------------
-// Messages API → text prompt conversion
-// ---------------------------------------------------------------------------
-const TOOL_RESULT_MAX = 300; // max chars per tool result in prompt
-
-function messagesToPrompt(messages) {
-  const parts = [];
-  for (const msg of messages) {
-    const role = msg.role === "assistant" ? "Assistant" : "Human";
-    let text = "";
-    if (typeof msg.content === "string") {
-      text = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      text = msg.content
-        .map((block) => {
-          if (block.type === "text") return block.text;
-          if (block.type === "tool_use") return `[Used tool: ${block.name}]`;
-          if (block.type === "tool_result") {
-            let c =
-              typeof block.content === "string"
-                ? block.content
-                : Array.isArray(block.content)
-                  ? block.content.map((b) => b.text || "").join("\n")
-                  : "";
-            // Truncate large results (JSON blobs, process output, etc.)
-            if (c.length > TOOL_RESULT_MAX) {
-              c = c.slice(0, TOOL_RESULT_MAX) + "...";
-            }
-            return c ? `[Tool result: ${c}]` : "";
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n");
-    }
-    if (text) parts.push(`${role}: ${text}`);
-  }
-  return parts.join("\n\n");
-}
-
-function buildSystemPrompt(body) {
-  let system = "";
-  if (typeof body.system === "string") {
-    system = body.system;
-  } else if (Array.isArray(body.system)) {
-    system = body.system.map((b) => b.text || "").join("\n");
-  }
-
-  if (Array.isArray(body.tools) && body.tools.length > 0) {
-    const defs = body.tools
-      .map(
-        (t) =>
-          `- ${t.name}: ${t.description || ""}\n  Input schema: ${JSON.stringify(t.input_schema || {})}`,
-      )
-      .join("\n");
-
-    system += `\n\nYou have access to the following tools. When you need to use a tool, respond with a JSON block in this exact format:
-\`\`\`tool_use
-{"name": "tool_name", "input": {...}}
-\`\`\`
-
-Available tools:
-${defs}
-
-When you don't need a tool, respond normally with text.`;
-  }
-
-  return system;
-}
-
-// ---------------------------------------------------------------------------
-// Response building
-// ---------------------------------------------------------------------------
-function parseToolUseFromText(text) {
-  const toolUses = [];
-  const cleaned = text.replace(
-    /```tool_use\s*\n?([\s\S]*?)```/g,
-    (_, json) => {
-      try {
-        const p = JSON.parse(json.trim());
-        toolUses.push({ name: p.name, input: p.input || {} });
-      } catch {
-        /* skip */
+  // Sanitize system prompt
+  if (typeof cleaned.system === "string") {
+    cleaned.system = sanitize(cleaned.system);
+  } else if (Array.isArray(cleaned.system)) {
+    cleaned.system = cleaned.system.map((block) => {
+      if (block.type === "text" && typeof block.text === "string") {
+        return { ...block, text: sanitize(block.text) };
       }
-      return "";
-    },
-  );
-  return { text: cleaned.trim(), toolUses };
-}
-
-function uid(len = 24) {
-  return randomUUID().replace(/-/g, "").slice(0, len);
-}
-
-function buildJsonResponse(model, resultText, inputTokens, outputTokens) {
-  const { text, toolUses } = parseToolUseFromText(resultText);
-  const content = [];
-  if (text) content.push({ type: "text", text });
-  for (const tu of toolUses) {
-    content.push({
-      type: "tool_use",
-      id: `toolu_${uid(20)}`,
-      name: tu.name,
-      input: tu.input,
+      return block;
     });
   }
-  if (!content.length) content.push({ type: "text", text: resultText || "" });
 
+  // Sanitize message text blocks (but NOT tool_use/tool_result — preserve those)
+  if (Array.isArray(cleaned.messages)) {
+    cleaned.messages = cleaned.messages.map((msg) => {
+      if (typeof msg.content === "string") {
+        return { ...msg, content: sanitize(msg.content) };
+      }
+      if (Array.isArray(msg.content)) {
+        return {
+          ...msg,
+          content: msg.content.map((block) => {
+            if (block.type === "text" && typeof block.text === "string") {
+              return { ...block, text: sanitize(block.text) };
+            }
+            return block; // tool_use, tool_result, image, thinking — pass through
+          }),
+        };
+      }
+      return msg;
+    });
+  }
+
+  return cleaned;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth token management
+// ---------------------------------------------------------------------------
+let cachedCreds = null;
+
+function readKeychain() {
+  let best = null;
+  for (const account of KEYCHAIN_ACCOUNTS) {
+    if (!account) continue;
+    try {
+      const raw = execSync(
+        `security find-generic-password -s "${KEYCHAIN_SERVICE}" -a "${account}" -w`,
+        { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] },
+      ).trim();
+      const parsed = JSON.parse(raw);
+      const creds = parsed.claudeAiOauth;
+      if (!creds?.accessToken) continue;
+      // Prefer the token with the latest expiry
+      if (!best || (creds.expiresAt || 0) > (best.expiresAt || 0)) {
+        best = creds;
+      }
+    } catch {
+      continue;
+    }
+  }
+  if (!best) console.error("[proxy] No Claude Code credentials found in keychain");
+  return best;
+}
+
+async function refreshToken(refreshTok) {
+  console.log("[proxy] Refreshing OAuth token...");
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      client_id: CLIENT_ID,
+      refresh_token: refreshTok,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Refresh failed (${res.status}): ${body}`);
+  }
+  const data = await res.json();
   return {
-    id: `msg_${uid()}`,
-    type: "message",
-    role: "assistant",
-    model,
-    content,
-    stop_reason: toolUses.length ? "tool_use" : "end_turn",
-    stop_sequence: null,
-    usage: {
-      input_tokens: inputTokens || 0,
-      output_tokens: outputTokens || 0,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    },
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
   };
 }
 
-function writeSSE(res, model, result) {
-  const { text, toolUses } = parseToolUseFromText(result.text);
-  const msgId = `msg_${uid()}`;
-  const finalStop = toolUses.length ? "tool_use" : "end_turn";
-  const sse = (ev, data) =>
-    res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
-
-  sse("message_start", {
-    type: "message_start",
-    message: {
-      id: msgId,
-      type: "message",
-      role: "assistant",
-      content: [],
-      model,
-      stop_reason: null,
-      stop_sequence: null,
-      usage: {
-        input_tokens: result.inputTokens || 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-      },
-    },
-  });
-
-  let idx = 0;
-
-  if (text) {
-    sse("content_block_start", {
-      type: "content_block_start",
-      index: idx,
-      content_block: { type: "text", text: "" },
-    });
-    const CHUNK = 80;
-    for (let i = 0; i < text.length; i += CHUNK) {
-      sse("content_block_delta", {
-        type: "content_block_delta",
-        index: idx,
-        delta: { type: "text_delta", text: text.slice(i, i + CHUNK) },
-      });
-    }
-    sse("content_block_stop", { type: "content_block_stop", index: idx });
-    idx++;
+async function getAccessToken() {
+  if (cachedCreds && cachedCreds.expiresAt > Date.now() + 120_000) {
+    return cachedCreds.accessToken;
   }
 
-  for (const tu of toolUses) {
-    sse("content_block_start", {
-      type: "content_block_start",
-      index: idx,
-      content_block: {
-        type: "tool_use",
-        id: `toolu_${uid(20)}`,
-        name: tu.name,
-        input: {},
-      },
-    });
-    sse("content_block_delta", {
-      type: "content_block_delta",
-      index: idx,
-      delta: { type: "input_json_delta", partial_json: JSON.stringify(tu.input) },
-    });
-    sse("content_block_stop", { type: "content_block_stop", index: idx });
-    idx++;
+  const kc = readKeychain();
+  if (!kc) throw new Error("No Claude Code credentials in keychain");
+
+  if (kc.expiresAt > Date.now() + 120_000) {
+    cachedCreds = kc;
+    return kc.accessToken;
   }
 
-  if (idx === 0) {
-    sse("content_block_start", {
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "text", text: "" },
-    });
-    sse("content_block_delta", {
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: result.text || "" },
-    });
-    sse("content_block_stop", { type: "content_block_stop", index: 0 });
-  }
+  // Expired — refresh
+  const refreshTok = kc.refreshToken || cachedCreds?.refreshToken;
+  if (!refreshTok) throw new Error("No refresh token available");
 
-  sse("message_delta", {
-    type: "message_delta",
-    delta: { stop_reason: finalStop, stop_sequence: null },
-    usage: { output_tokens: result.outputTokens || 0 },
-  });
-  sse("message_stop", { type: "message_stop" });
+  const fresh = await refreshToken(refreshTok);
+  cachedCreds = fresh;
+  console.log(
+    "[proxy] Token refreshed (expires %s)",
+    new Date(fresh.expiresAt).toLocaleTimeString(),
+  );
+  return fresh.accessToken;
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code runner (serialized — one claude -p at a time)
-// ---------------------------------------------------------------------------
-let _busy = false;
-const _pending = [];
-
-function runClaudeSerialized(prompt, systemPrompt, model) {
-  return new Promise((resolve, reject) => {
-    const run = () =>
-      _runClaude(prompt, systemPrompt, model).then(resolve, reject).finally(() => {
-        _busy = false;
-        const next = _pending.shift();
-        if (next) { _busy = true; next(); }
-      });
-
-    if (!_busy) {
-      _busy = true;
-      run();
-    } else {
-      console.log("[proxy] queued (position %d)", _pending.length + 1);
-      _pending.push(run);
-    }
-  });
-}
-
-function _runClaude(prompt, systemPrompt, model) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-p",
-      "--output-format",
-      "json",
-      "--tools",
-      "",
-      "--no-session-persistence",
-    ];
-
-    // Map model names to Claude Code aliases
-    if (model?.includes("opus")) args.push("--model", "opus");
-    else if (model?.includes("sonnet")) args.push("--model", "sonnet");
-    else if (model?.includes("haiku")) args.push("--model", "haiku");
-
-    // Write system prompt to a temp file (avoids ARG_MAX limits)
-    let tmpFile = null;
-    if (systemPrompt) {
-      tmpFile = join(tmpdir(), `ccp-sys-${Date.now()}-${uid(8)}.txt`);
-      writeFileSync(tmpFile, unescapeJsonLeaks(sanitize(systemPrompt)));
-      args.push("--system-prompt-file", tmpFile);
-    }
-
-    const modelLabel =
-      args.find((_, i, a) => a[i - 1] === "--model") || "default";
-    console.log(
-      "[proxy] claude -p --model %s (stdin %d chars, sys %d chars)",
-      modelLabel,
-      prompt.length,
-      (systemPrompt || "").length,
-    );
-
-    const proc = spawn(CLAUDE_BIN, args, {
-      env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
-      timeout: TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    proc.stdin.write(unescapeJsonLeaks(sanitize(prompt)));
-    proc.stdin.end();
-
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d));
-    proc.stderr.on("data", (d) => (stderr += d));
-
-    proc.on("close", (code) => {
-      if (tmpFile) {
-        try {
-          unlinkSync(tmpFile);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (stderr && !stdout) {
-        console.error("[proxy] stderr:", stderr.slice(0, 500));
-      }
-      try {
-        const out = JSON.parse(stdout);
-        if (out.is_error) {
-          console.error("[proxy] claude error:", (out.result || "").slice(0, 300));
-        }
-        resolve({
-          text: out.result || "",
-          isError: !!out.is_error,
-          inputTokens: out.usage?.input_tokens || 0,
-          outputTokens: out.usage?.output_tokens || 0,
-          cost: out.total_cost_usd || 0,
-        });
-      } catch {
-        if (stdout.trim()) {
-          resolve({
-            text: stdout.trim(),
-            isError: false,
-            inputTokens: 0,
-            outputTokens: 0,
-            cost: 0,
-          });
-        } else {
-          reject(new Error(`claude exited ${code}: ${stderr.slice(0, 300)}`));
-        }
-      }
-    });
-
-    proc.on("error", (err) =>
-      reject(new Error(`spawn failed: ${err.message}`)),
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// HTTP handler
+// Proxy handler
 // ---------------------------------------------------------------------------
 async function handleRequest(req, res) {
   // CORS preflight
@@ -421,86 +191,134 @@ async function handleRequest(req, res) {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, anthropic-version, anthropic-beta, x-api-key",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, anthropic-version, anthropic-beta, x-api-key",
     });
     res.end();
     return;
   }
 
-  if (req.method !== "POST" || !req.url.includes("/messages")) {
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: { type: "not_found", message: "POST /v1/messages only" },
-      }),
-    );
-    return;
-  }
-
   const t0 = Date.now();
+
+  // Collect body
   const chunks = [];
   for await (const c of req) chunks.push(c);
+  const rawBody = Buffer.concat(chunks);
 
-  let body;
+  // Get token
+  let token;
   try {
-    body = JSON.parse(Buffer.concat(chunks).toString());
-  } catch {
-    res.writeHead(400, { "Content-Type": "application/json" });
+    token = await getAccessToken();
+  } catch (err) {
+    console.error("[proxy] Auth error:", err.message);
+    res.writeHead(502, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        error: { type: "invalid_request", message: "Invalid JSON" },
-      }),
+      JSON.stringify({ error: { type: "proxy_error", message: err.message } }),
     );
     return;
   }
 
-  const model = body.model || "claude-opus-4-6";
-  const prompt = unescapeJsonLeaks(sanitize(messagesToPrompt(body.messages || [])));
-  const systemPrompt = buildSystemPrompt(body);
-  const streaming = body.stream === true;
+  // Parse and sanitize the request body
+  let body;
+  try {
+    body = JSON.parse(rawBody.toString());
+  } catch {
+    // Not JSON — forward as-is (unlikely for Messages API)
+    body = null;
+  }
+
+  const forwardBody = body ? JSON.stringify(sanitizeRequestBody(body)) : rawBody;
+  const model = body?.model || "unknown";
+  const streaming = body?.stream === true;
+  const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
 
   console.log(
-    "[proxy] %s %s (prompt %d, system %d)",
+    "[proxy] %s %s%s → api.anthropic.com",
     model,
-    streaming ? "stream" : "json",
-    prompt.length,
-    systemPrompt.length,
+    streaming ? "stream " : "",
+    hasTools ? `(${body.tools.length} tools) ` : "",
   );
 
-  try {
-    const result = await runClaudeSerialized(prompt, systemPrompt, model);
-    const ms = Date.now() - t0;
-    console.log(
-      "[proxy] %s %dms tokens=%d→%d $%s%s",
-      result.isError ? "ERR" : "OK",
-      ms,
-      result.inputTokens,
-      result.outputTokens,
-      result.cost.toFixed(4),
-      result.isError ? ` | ${result.text.slice(0, 100)}` : "",
-    );
+  // Build upstream headers
+  const fwdHeaders = {};
+  for (const [key, val] of Object.entries(req.headers)) {
+    if (
+      ["host", "connection", "x-api-key", "authorization"].includes(
+        key.toLowerCase(),
+      )
+    )
+      continue;
+    fwdHeaders[key] = val;
+  }
+  fwdHeaders["authorization"] = `Bearer ${token}`;
+  fwdHeaders["user-agent"] = "claude-cli/2.1.92";
+  fwdHeaders["x-app"] = "cli";
 
-    if (streaming) {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
+  // Merge required beta headers
+  const existingBeta = fwdHeaders["anthropic-beta"] || "";
+  const requiredBetas = ["claude-code-20250219", "oauth-2025-04-20"];
+  const allBetas = [
+    ...requiredBetas,
+    ...existingBeta.split(",").map((s) => s.trim()).filter(Boolean),
+  ];
+  fwdHeaders["anthropic-beta"] = [...new Set(allBetas)].join(",");
+
+  const upstream = `${ANTHROPIC_API}${req.url}`;
+
+  try {
+    let upRes = await fetch(upstream, {
+      method: req.method,
+      headers: fwdHeaders,
+      body: ["GET", "HEAD"].includes(req.method) ? undefined : forwardBody,
+      signal: AbortSignal.timeout(300_000),
+    });
+
+    // On 401, refresh and retry once
+    if (upRes.status === 401) {
+      console.log("[proxy] 401 — refreshing token");
+      cachedCreds = null;
+      token = await getAccessToken();
+      fwdHeaders["authorization"] = `Bearer ${token}`;
+      upRes = await fetch(upstream, {
+        method: req.method,
+        headers: fwdHeaders,
+        body: ["GET", "HEAD"].includes(req.method) ? undefined : forwardBody,
+        signal: AbortSignal.timeout(300_000),
       });
-      writeSSE(res, model, result);
-      res.end();
-    } else {
-      const resp = buildJsonResponse(
-        model,
-        result.text,
-        result.inputTokens,
-        result.outputTokens,
-      );
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(resp));
     }
+
+    // Stream response through
+    const resHeaders = {};
+    for (const [key, val] of upRes.headers.entries()) {
+      if (["transfer-encoding", "connection"].includes(key.toLowerCase()))
+        continue;
+      resHeaders[key] = val;
+    }
+    res.writeHead(upRes.status, resHeaders);
+
+    if (upRes.body) {
+      const reader = upRes.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+      } finally {
+        res.end();
+      }
+    } else {
+      res.end();
+    }
+
+    const ms = Date.now() - t0;
+    console.log("[proxy] %d %dms", upRes.status, ms);
   } catch (err) {
-    console.error("[proxy] %dms ERROR: %s", Date.now() - t0, err.message);
-    res.writeHead(502, { "Content-Type": "application/json" });
+    const ms = Date.now() - t0;
+    console.error("[proxy] ERROR %dms: %s cause=%s", ms, err.message, err.cause?.message || err.cause || "none");
+    if (!res.headersSent) {
+      res.writeHead(502, { "Content-Type": "application/json" });
+    }
     res.end(
       JSON.stringify({
         type: "error",
@@ -517,11 +335,15 @@ const server = createServer(handleRequest);
 server.listen(PORT, "127.0.0.1", () => {
   console.log();
   console.log("  claude-code-proxy running on http://127.0.0.1:%d", PORT);
-  console.log("  Claude binary: %s", CLAUDE_BIN);
   console.log();
   console.log("  Set your app's Anthropic base URL to:");
   console.log("    ANTHROPIC_BASE_URL=http://127.0.0.1:%d", PORT);
   console.log();
+
+  // Pre-warm token
+  getAccessToken()
+    .then(() => console.log("[proxy] Token ready"))
+    .catch((err) => console.error("[proxy] Token error:", err.message));
 });
 
 server.on("error", (err) => {
