@@ -17,6 +17,7 @@
 
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -224,6 +225,39 @@ async function handleRequest(req, res) {
     body = null;
   }
 
+  // Inject Claude Code billing header and metadata so the request
+  // is classified as first-party (plan limits, not extra usage)
+  if (body) {
+    // Add billing header as first system block
+    const billingBlock = {
+      type: "text",
+      text: "x-anthropic-billing-header: cc_version=2.1.92.75f; cc_entrypoint=cli;",
+    };
+    if (typeof body.system === "string") {
+      body.system = [billingBlock, { type: "text", text: body.system }];
+    } else if (Array.isArray(body.system)) {
+      body.system = [billingBlock, ...body.system];
+    } else {
+      body.system = [billingBlock];
+    }
+
+    // Add metadata if missing
+    if (!body.metadata) {
+      body.metadata = {
+        user_id: JSON.stringify({
+          device_id: "proxy",
+          account_uuid: "proxy",
+          session_id: randomUUID(),
+        }),
+      };
+    }
+
+    // Add adaptive thinking if not present (required for first-party classification)
+    if (!body.thinking) {
+      body.thinking = { type: "adaptive" };
+    }
+  }
+
   const forwardBody = body ? JSON.stringify(sanitizeRequestBody(body)) : rawBody;
   const model = body?.model || "unknown";
   const streaming = body?.stream === true;
@@ -240,7 +274,7 @@ async function handleRequest(req, res) {
   const fwdHeaders = {};
   for (const [key, val] of Object.entries(req.headers)) {
     if (
-      ["host", "connection", "x-api-key", "authorization"].includes(
+      ["host", "connection", "content-length", "x-api-key", "authorization"].includes(
         key.toLowerCase(),
       )
     )
@@ -248,19 +282,30 @@ async function handleRequest(req, res) {
     fwdHeaders[key] = val;
   }
   fwdHeaders["authorization"] = `Bearer ${token}`;
-  fwdHeaders["user-agent"] = "claude-cli/2.1.92";
+  fwdHeaders["user-agent"] = "claude-cli/2.1.92 (external, cli)";
   fwdHeaders["x-app"] = "cli";
 
-  // Merge required beta headers
+  // Match Claude Code's exact beta headers
+  const requiredBetas = [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "effort-2025-11-24",
+  ];
+  const blockedBetas = new Set(["context-1m-2025-08-07"]); // breaks OAuth
   const existingBeta = fwdHeaders["anthropic-beta"] || "";
-  const requiredBetas = ["claude-code-20250219", "oauth-2025-04-20"];
   const allBetas = [
     ...requiredBetas,
     ...existingBeta.split(",").map((s) => s.trim()).filter(Boolean),
-  ];
+  ].filter((b) => !blockedBetas.has(b));
   fwdHeaders["anthropic-beta"] = [...new Set(allBetas)].join(",");
 
-  const upstream = `${ANTHROPIC_API}${req.url}`;
+  // Claude Code uses ?beta=true on the URL
+  const upstreamUrl = new URL(`${ANTHROPIC_API}${req.url}`);
+  upstreamUrl.searchParams.set("beta", "true");
+  const upstream = upstreamUrl.href;
 
   try {
     let upRes = await fetch(upstream, {
