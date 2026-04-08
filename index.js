@@ -280,6 +280,10 @@ async function handleRequest(req, res) {
   }
 
   // Inject billing header
+  // Strip thinking — pi-ai adds it but it causes "terminated" errors
+  // when the response includes thinking blocks the embedded runner can't handle
+  delete body.thinking;
+
   const preparedBody = injectBillingHeader(body);
 
   // Sanitize ONLY system prompt blocks — not tools, messages, or paths
