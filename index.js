@@ -267,7 +267,7 @@ async function handleRequest(req, res) {
   // Cap tools at 10 — Anthropic rejects OAuth requests with >10 tools
   if (Array.isArray(body.tools) && body.tools.length > 10) {
     const priority = ["Read", "Edit", "Write", "exec", "process",
-                      "web_search", "web_fetch", "memory_search", "memory_get", "session_status"];
+                      "web_search", "web_fetch", "memory_search", "memory_get", "sessions_spawn"];
     const prioritySet = new Set(priority.map(n => n.toLowerCase()));
     const kept = body.tools.filter(t => prioritySet.has(t.name.toLowerCase()));
     for (const t of body.tools) {
