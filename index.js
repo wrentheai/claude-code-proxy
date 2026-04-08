@@ -221,12 +221,6 @@ function injectBillingHeader(body) {
     cleaned.system = [billing];
   }
 
-  // Add thinking for models that support it (Opus/Sonnet 4.6+)
-  const m = (cleaned.model || "").toLowerCase();
-  if (!cleaned.thinking && (m.includes("opus") || m.includes("sonnet"))) {
-    cleaned.thinking = { type: "adaptive" };
-  }
-
   return cleaned;
 }
 
