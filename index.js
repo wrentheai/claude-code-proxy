@@ -311,12 +311,19 @@ async function handleRequest(req, res) {
   fwdHeaders["x-app"] = "cli";
 
   // Merge beta headers
+  // Only include betas needed for auth — don't add betas that inject
+  // extra response fields (context_management, thinking, etc) that
+  // downstream parsers might not handle
   const requiredBetas = [
     "claude-code-20250219", "oauth-2025-04-20",
-    "interleaved-thinking-2025-05-14", "context-management-2025-06-27",
-    "prompt-caching-scope-2026-01-05", "effort-2025-11-24",
   ];
-  const blockedBetas = new Set(["context-1m-2025-08-07"]);
+  const blockedBetas = new Set([
+    "context-1m-2025-08-07",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "effort-2025-11-24",
+  ]);
   const existing = (fwdHeaders["anthropic-beta"] || "").split(",").map(s => s.trim()).filter(Boolean);
   fwdHeaders["anthropic-beta"] = [...new Set([...requiredBetas, ...existing])].filter(b => !blockedBetas.has(b)).join(",");
 
