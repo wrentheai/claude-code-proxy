@@ -346,13 +346,23 @@ async function handleRequest(req, res) {
       signal: AbortSignal.timeout(300_000),
     });
 
-    // Retry on 401
-    if (upRes.status === 401) {
+    // On 400/401, refresh billing header + token and retry
+    if (upRes.status === 400 || upRes.status === 401) {
+      console.log("[proxy] %d — refreshing billing header + token", upRes.status);
       cachedCreds = null;
+      try { await captureBillingHeader(); } catch {}
       token = await getAccessToken();
       fwdHeaders["authorization"] = `Bearer ${token}`;
+      // Re-inject fresh billing header
+      const freshBody = injectBillingHeader(body);
+      if (Array.isArray(freshBody.system)) {
+        freshBody.system = freshBody.system.map(b =>
+          b.type === "text" && typeof b.text === "string" ? { ...b, text: sanitize(b.text) } : b
+        );
+      }
+      const retryBody = JSON.stringify(freshBody);
       upRes = await fetch(upstreamUrl.href, {
-        method: req.method, headers: fwdHeaders, body: forwardBody,
+        method: req.method, headers: fwdHeaders, body: retryBody,
         signal: AbortSignal.timeout(300_000),
       });
     }
