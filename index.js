@@ -102,7 +102,8 @@ function runClaude(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
     const args = ["-p", "--output-format", "stream-json", "--verbose",
       "--no-session-persistence", "--dangerously-skip-permissions",
-      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch"];
+      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
+      "--max-budget-usd", "0.50"];
 
     if (model?.includes("opus")) args.push("--model", "opus");
     else if (model?.includes("sonnet")) args.push("--model", "sonnet");
