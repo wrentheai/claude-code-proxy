@@ -266,25 +266,11 @@ async function handleRequest(req, res) {
   console.log("[proxy] inbound betas: %s", req.headers["anthropic-beta"] || "none");
   console.log("[proxy] thinking: %s", JSON.stringify(body.thinking || null));
 
-  // Cap tools at 10 — Anthropic rejects OAuth requests with >10 tools
-  if (Array.isArray(body.tools) && body.tools.length > 10) {
-    const priority = ["Read", "Edit", "Write", "exec", "process",
-                      "web_search", "web_fetch", "memory_search", "memory_get", "sessions_spawn"];
-    const prioritySet = new Set(priority.map(n => n.toLowerCase()));
-    const kept = body.tools.filter(t => prioritySet.has(t.name.toLowerCase()));
-    for (const t of body.tools) {
-      if (kept.length >= 10) break;
-      if (!prioritySet.has(t.name.toLowerCase())) kept.push(t);
-    }
-    console.log("[proxy] Capped tools: %d → %d (%s)", body.tools.length, kept.length,
-      kept.map(t => t.name).join(", "));
-    body.tools = kept;
+  // Don't cap tools or strip thinking — pass everything through
+  // With proper session headers, the API accepts the full request
+  if (Array.isArray(body.tools)) {
+    console.log("[proxy] tools: %d", body.tools.length);
   }
-
-  // Inject billing header
-  // Strip thinking — pi-ai adds it but it causes "terminated" errors
-  // when the response includes thinking blocks the embedded runner can't handle
-  delete body.thinking;
 
   const preparedBody = injectBillingHeader(body);
 
@@ -312,24 +298,28 @@ async function handleRequest(req, res) {
     fwdHeaders[key] = val;
   }
   fwdHeaders["authorization"] = `Bearer ${token}`;
-  fwdHeaders["user-agent"] = "claude-cli/2.1.92 (external, cli)";
+  fwdHeaders["user-agent"] = "claude-cli/2.1.97 (external, cli)";
   fwdHeaders["x-app"] = "cli";
+  fwdHeaders["anthropic-dangerous-direct-browser-access"] = "true";
+  if (!global._proxySessionId) global._proxySessionId = randomUUID();
+  fwdHeaders["x-claude-code-session-id"] = global._proxySessionId;
+  fwdHeaders["x-stainless-arch"] = "arm64";
+  fwdHeaders["x-stainless-lang"] = "js";
+  fwdHeaders["x-stainless-os"] = "MacOS";
+  fwdHeaders["x-stainless-package-version"] = "0.81.0";
+  fwdHeaders["x-stainless-runtime"] = "node";
+  fwdHeaders["x-stainless-runtime-version"] = process.version;
+  fwdHeaders["x-stainless-retry-count"] = "0";
+  fwdHeaders["x-stainless-timeout"] = "600";
 
   // Merge beta headers
-  // Only include betas needed for auth — don't add betas that inject
-  // extra response fields (context_management, thinking, etc) that
-  // downstream parsers might not handle
+  // Match Claude Code's exact beta set
   const requiredBetas = [
     "claude-code-20250219", "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14", "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05", "effort-2025-11-24",
   ];
-  const blockedBetas = new Set([
-    "context-1m-2025-08-07",
-    "interleaved-thinking-2025-05-14",
-    "context-management-2025-06-27",
-    "prompt-caching-scope-2026-01-05",
-    "effort-2025-11-24",
-    "fine-grained-tool-streaming-2025-05-14",
-  ]);
+  const blockedBetas = new Set(["context-1m-2025-08-07"]);
   const existing = (fwdHeaders["anthropic-beta"] || "").split(",").map(s => s.trim()).filter(Boolean);
   const finalBetas = [...new Set([...requiredBetas, ...existing])].filter(b => !blockedBetas.has(b));
   fwdHeaders["anthropic-beta"] = finalBetas.join(",");
