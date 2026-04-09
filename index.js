@@ -263,6 +263,8 @@ async function handleRequest(req, res) {
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
 
   console.log("[proxy] %s %s%s", model, streaming ? "stream " : "", hasTools ? `(${body.tools.length} tools) ` : "");
+  console.log("[proxy] inbound betas: %s", req.headers["anthropic-beta"] || "none");
+  console.log("[proxy] thinking: %s", JSON.stringify(body.thinking || null));
 
   // Cap tools at 10 — Anthropic rejects OAuth requests with >10 tools
   if (Array.isArray(body.tools) && body.tools.length > 10) {
@@ -299,6 +301,9 @@ async function handleRequest(req, res) {
   }
 
   const forwardBody = JSON.stringify(preparedBody);
+  // Verify thinking is gone
+  const parsed = JSON.parse(forwardBody);
+  console.log("[proxy] FINAL body thinking: %s, tools: %d", JSON.stringify(parsed.thinking || null), (parsed.tools||[]).length);
 
   // Build headers
   const fwdHeaders = {};
@@ -323,9 +328,12 @@ async function handleRequest(req, res) {
     "context-management-2025-06-27",
     "prompt-caching-scope-2026-01-05",
     "effort-2025-11-24",
+    "fine-grained-tool-streaming-2025-05-14",
   ]);
   const existing = (fwdHeaders["anthropic-beta"] || "").split(",").map(s => s.trim()).filter(Boolean);
-  fwdHeaders["anthropic-beta"] = [...new Set([...requiredBetas, ...existing])].filter(b => !blockedBetas.has(b)).join(",");
+  const finalBetas = [...new Set([...requiredBetas, ...existing])].filter(b => !blockedBetas.has(b));
+  fwdHeaders["anthropic-beta"] = finalBetas.join(",");
+  console.log("[proxy] outbound betas: %s", fwdHeaders["anthropic-beta"]);
 
   const upstreamUrl = new URL(`${ANTHROPIC_API}${req.url}`);
   upstreamUrl.searchParams.set("beta", "true");
