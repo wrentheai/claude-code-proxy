@@ -52,28 +52,82 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8082
 
 ## Usage with OpenClaw
 
-1. Start the proxy:
-   ```bash
-   npx claude-code-proxy
-   ```
+### 1. Start the proxy
 
-2. Patch OpenClaw's pi-ai to use the proxy (add to top of `createClient` in
-   `node_modules/@mariozechner/pi-ai/dist/providers/anthropic.js`):
-   ```js
-   if (typeof process !== "undefined" && process.env.ANTHROPIC_BASE_URL && model.provider === "anthropic") {
-       model = { ...model, baseUrl: process.env.ANTHROPIC_BASE_URL };
-   }
-   ```
+```bash
+npx claude-code-proxy
+```
 
-3. Set the env var and restart OpenClaw's gateway:
-   ```bash
-   # Add to your gateway's environment:
-   ANTHROPIC_BASE_URL=http://127.0.0.1:8082
-   ```
+### 2. Patch pi-ai to use the proxy
 
-### macOS launchd service
+OpenClaw's Anthropic provider ignores `ANTHROPIC_BASE_URL`. You need to patch it so requests route through the proxy instead of directly to Anthropic.
 
-To run the proxy as a persistent service:
+Find the `createClient` function in:
+```
+<openclaw-install>/node_modules/@mariozechner/pi-ai/dist/providers/anthropic.js
+```
+
+On macOS with Homebrew, the full path is typically:
+```
+/opt/homebrew/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/providers/anthropic.js
+```
+
+Add these 3 lines to the **top** of the `createClient` function body:
+
+```js
+function createClient(model, apiKey, interleavedThinking, optionsHeaders, dynamicHeaders) {
+    // [claude-proxy] Allow ANTHROPIC_BASE_URL env var to override hardcoded baseUrl
+    if (typeof process !== "undefined" && process.env.ANTHROPIC_BASE_URL && model.provider === "anthropic") {
+        model = { ...model, baseUrl: process.env.ANTHROPIC_BASE_URL };
+    }
+    // ... rest of function unchanged
+```
+
+> **Note:** This patch is overwritten every time you run `openclaw update`. You'll need to re-apply it after updates.
+
+### 3. Add `ANTHROPIC_BASE_URL` to the gateway's environment
+
+Edit your OpenClaw gateway plist (`~/Library/LaunchAgents/ai.openclaw.gateway.plist`) and add this inside the `<dict>` under `EnvironmentVariables`:
+
+```xml
+<key>ANTHROPIC_BASE_URL</key>
+<string>http://127.0.0.1:8082</string>
+```
+
+### 4. Increase timeouts
+
+The proxy routes requests through `claude -p`, which can take several minutes for complex tool-use responses. OpenClaw's default LLM idle timeout is 60 seconds — too short.
+
+Add these to your `~/.openclaw/openclaw.json` inside `agents.defaults`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "timeoutSeconds": 600,
+      "llm": {
+        "idleTimeoutSeconds": 600
+      }
+    }
+  }
+}
+```
+
+### 5. Restart everything
+
+```bash
+# Restart the gateway to pick up env + config changes
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+```
+
+### After `openclaw update`
+
+The only thing you need to redo is step 2 — re-apply the pi-ai patch. The proxy, plist, and config changes survive updates.
+
+### macOS launchd service (proxy)
+
+To run the proxy as a persistent background service:
 
 ```bash
 cat > ~/Library/LaunchAgents/claude-code-proxy.plist << 'EOF'
