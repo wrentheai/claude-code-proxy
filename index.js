@@ -254,9 +254,9 @@ async function handleRequest(req, res) {
 
   console.log("[proxy] %s %s (prompt %d, system %d)", model, streaming ? "stream" : "json", prompt.length, systemPrompt.length);
 
+  let pingInterval;
   try {
     // For streaming: send headers + keepalive pings while claude -p works
-    let pingInterval;
     if (streaming) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
       // Send ping every 15s to prevent gateway timeout
