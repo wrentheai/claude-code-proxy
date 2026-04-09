@@ -191,8 +191,14 @@ function runClaude(prompt, systemPrompt, model) {
 let _busy = false;
 const _pending = [];
 
+const MAX_QUEUE = 1; // reject if more than 1 request waiting — gateway will retry anyway
+
 function runClaudeSerialized(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
+    if (_pending.length >= MAX_QUEUE) {
+      console.log("[proxy] queue full (%d), rejecting", _pending.length);
+      return reject(new Error("queue_full"));
+    }
     const run = () => runClaude(prompt, systemPrompt, model)
       .then(resolve, reject)
       .finally(() => { _busy = false; const n = _pending.shift(); if (n) { _busy = true; n(); } });
@@ -276,9 +282,12 @@ async function handleRequest(req, res) {
       }));
     }
   } catch (err) {
-    console.error("[proxy] %dms ERROR: %s", Date.now() - t0, err.message);
-    if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ type: "error", error: { type: "proxy_error", message: err.message } }));
+    if (pingInterval) clearInterval(pingInterval);
+    const ms = Date.now() - t0;
+    const status = err.message === "queue_full" ? 429 : 502;
+    console.error("[proxy] %dms ERROR(%d): %s", ms, status, err.message);
+    if (!res.headersSent) res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ type: "error", error: { type: status === 429 ? "rate_limit" : "proxy_error", message: err.message } }));
   }
 }
 
