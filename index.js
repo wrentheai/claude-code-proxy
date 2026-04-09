@@ -121,6 +121,14 @@ function runClaude(prompt, systemPrompt, model) {
         console.log("[proxy] Truncated system prompt: %d → %d chars", systemPrompt.length, cleanSys.length);
         try { writeFileSync("/Users/kevinl/.openclaw/logs/proxy-truncated-sys.txt", cleanSys); } catch {}
       }
+      // Prepend instruction to limit tool usage — respond quickly with text,
+      // only use tools when the user explicitly asks for an action.
+      cleanSys = `IMPORTANT: You are running through a proxy with limited session time. `
+        + `Respond conversationally with TEXT first. Only use tools (Bash, Read, Write, etc.) `
+        + `when the user explicitly asks you to DO something (build, fix, check, create, edit). `
+        + `For questions, status checks, or casual chat — just answer from context. `
+        + `When you DO use tools, limit yourself to 3-5 tool calls maximum per response.\n\n`
+        + cleanSys;
       writeFileSync(tmpFile, cleanSys);
       args.push("--system-prompt-file", tmpFile);
     }
