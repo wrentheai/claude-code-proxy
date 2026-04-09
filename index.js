@@ -114,11 +114,12 @@ function runClaude(prompt, systemPrompt, model) {
       // Don't sanitize content — claude -p handles auth via billing header.
       // Only truncate to avoid third-party detection threshold (~21k chars).
       let cleanSys = systemPrompt;
-      if (cleanSys.length > 21000) {
+      if (cleanSys.length > 20000) {
         // Try to cut at a section boundary
         const cutPoint = cleanSys.lastIndexOf("\n##", 21000);
         cleanSys = cleanSys.slice(0, cutPoint > 15000 ? cutPoint : 21000);
         console.log("[proxy] Truncated system prompt: %d → %d chars", systemPrompt.length, cleanSys.length);
+        try { writeFileSync("/Users/kevinl/.openclaw/logs/proxy-truncated-sys.txt", cleanSys); } catch {}
       }
       writeFileSync(tmpFile, cleanSys);
       args.push("--system-prompt-file", tmpFile);
