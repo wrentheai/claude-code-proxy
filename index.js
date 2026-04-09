@@ -102,8 +102,7 @@ function runClaude(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
     const args = ["-p", "--output-format", "stream-json", "--verbose",
       "--no-session-persistence", "--dangerously-skip-permissions",
-      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
-      "--max-budget-usd", "0.50"];
+      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch"];
 
     if (model?.includes("opus")) args.push("--model", "opus");
     else if (model?.includes("sonnet")) args.push("--model", "sonnet");
@@ -250,12 +249,22 @@ async function handleRequest(req, res) {
   console.log("[proxy] %s %s (prompt %d, system %d)", model, streaming ? "stream" : "json", prompt.length, systemPrompt.length);
 
   try {
+    // For streaming: send headers + keepalive pings while claude -p works
+    let pingInterval;
+    if (streaming) {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      // Send ping every 15s to prevent gateway timeout
+      pingInterval = setInterval(() => {
+        res.write(`event: ping\ndata: {"type": "ping"}\n\n`);
+      }, 15_000);
+    }
+
     const result = await runClaudeSerialized(prompt, systemPrompt, model);
+    if (pingInterval) clearInterval(pingInterval);
     const ms = Date.now() - t0;
     console.log("[proxy] %s %dms in=%d out=%d", result.isError ? "ERR" : "OK", ms, result.usage.input_tokens, result.usage.output_tokens);
 
     if (streaming) {
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
       writeStreamResponse(res, model, result.text, result.usage);
       res.end();
     } else {
