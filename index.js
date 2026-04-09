@@ -25,7 +25,7 @@ function arg(name, fallback) {
 }
 
 const PORT = parseInt(arg("port", "8082"), 10);
-const TIMEOUT_MS = parseInt(arg("timeout", "120000"), 10);
+const TIMEOUT_MS = parseInt(arg("timeout", "600000"), 10);
 const CLAUDE_BIN = (() => {
   try { return execSync("which claude", { encoding: "utf-8" }).trim(); }
   catch { return "claude"; }
