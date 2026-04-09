@@ -25,5 +25,8 @@
     "index.js",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.97"
+  }
 }
