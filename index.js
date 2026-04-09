@@ -116,8 +116,8 @@ function runClaude(prompt, systemPrompt, model) {
       let cleanSys = systemPrompt;
       if (cleanSys.length > 20000) {
         // Try to cut at a section boundary
-        const cutPoint = cleanSys.lastIndexOf("\n##", 21000);
-        cleanSys = cleanSys.slice(0, cutPoint > 15000 ? cutPoint : 21000);
+        const cutPoint = cleanSys.lastIndexOf("\n##", 20000);
+        cleanSys = cleanSys.slice(0, cutPoint > 15000 ? cutPoint : 20000);
         console.log("[proxy] Truncated system prompt: %d → %d chars", systemPrompt.length, cleanSys.length);
         try { writeFileSync("/Users/kevinl/.openclaw/logs/proxy-truncated-sys.txt", cleanSys); } catch {}
       }
