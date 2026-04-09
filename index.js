@@ -101,7 +101,8 @@ function uid(n = 24) { return randomUUID().replace(/-/g, "").slice(0, n); }
 function runClaude(prompt, systemPrompt, model) {
   return new Promise((resolve, reject) => {
     const args = ["-p", "--output-format", "stream-json", "--verbose",
-      "--no-session-persistence", "--tools", ""];
+      "--no-session-persistence", "--dangerously-skip-permissions",
+      "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch"];
 
     if (model?.includes("opus")) args.push("--model", "opus");
     else if (model?.includes("sonnet")) args.push("--model", "sonnet");
