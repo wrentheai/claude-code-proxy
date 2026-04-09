@@ -266,10 +266,19 @@ async function handleRequest(req, res) {
   console.log("[proxy] inbound betas: %s", req.headers["anthropic-beta"] || "none");
   console.log("[proxy] thinking: %s", JSON.stringify(body.thinking || null));
 
-  // Don't cap tools or strip thinking — pass everything through
-  // With proper session headers, the API accepts the full request
   if (Array.isArray(body.tools)) {
     console.log("[proxy] tools: %d", body.tools.length);
+  }
+
+  // Inject metadata if missing — required for first-party classification
+  if (!body.metadata) {
+    body.metadata = {
+      user_id: JSON.stringify({
+        device_id: "d31acc551cf52ca5605096f39399fff616a011ec1e60de3f4cc191605dbf8688",
+        account_uuid: "eda3e3e5-2ed8-4364-a353-aa586e047252",
+        session_id: global._proxySessionId || randomUUID(),
+      }),
+    };
   }
 
   const preparedBody = injectBillingHeader(body);
