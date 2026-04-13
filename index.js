@@ -98,8 +98,9 @@ function extractSystemPrompt(body) {
 // ---------------------------------------------------------------------------
 function uid(n = 24) { return randomUUID().replace(/-/g, "").slice(0, n); }
 
-function runClaude(prompt, systemPrompt, model) {
+function runClaude(prompt, systemPrompt, model, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error("cancelled")); return; }
     const args = ["-p", "--output-format", "stream-json", "--verbose",
       "--no-session-persistence", "--dangerously-skip-permissions",
       "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch"];
@@ -138,6 +139,12 @@ function runClaude(prompt, systemPrompt, model) {
       timeout: TIMEOUT_MS,
       stdio: ["pipe", "pipe", "pipe"],
     });
+
+    if (signal) {
+      const onAbort = () => { try { proc.kill(); } catch {} };
+      signal.addEventListener("abort", onAbort, { once: true });
+      proc.on("close", () => signal.removeEventListener("abort", onAbort));
+    }
 
     proc.stdin.write(prompt);
     proc.stdin.end();
@@ -201,17 +208,29 @@ const _pending = [];
 
 const MAX_QUEUE = 1; // reject if more than 1 request waiting — gateway will retry anyway
 
-function runClaudeSerialized(prompt, systemPrompt, model) {
+function runClaudeSerialized(prompt, systemPrompt, model, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("cancelled"));
     if (_pending.length >= MAX_QUEUE) {
       console.log("[proxy] queue full (%d), rejecting", _pending.length);
       return reject(new Error("queue_full"));
     }
-    const run = () => runClaude(prompt, systemPrompt, model)
-      .then(resolve, reject)
-      .finally(() => { _busy = false; const n = _pending.shift(); if (n) { _busy = true; n(); } });
+    const drainNext = () => { _busy = false; const n = _pending.shift(); if (n) { _busy = true; n(); } };
+    const run = () => {
+      if (signal?.aborted) { drainNext(); return reject(new Error("cancelled")); }
+      runClaude(prompt, systemPrompt, model, signal).then(resolve, reject).finally(drainNext);
+    };
     if (!_busy) { _busy = true; run(); }
-    else { console.log("[proxy] queued (%d)", _pending.length + 1); _pending.push(run); }
+    else {
+      console.log("[proxy] queued (%d)", _pending.length + 1);
+      _pending.push(run);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          const idx = _pending.indexOf(run);
+          if (idx !== -1) { _pending.splice(idx, 1); reject(new Error("cancelled")); }
+        }, { once: true });
+      }
+    }
   });
 }
 
@@ -262,6 +281,9 @@ async function handleRequest(req, res) {
 
   console.log("[proxy] %s %s (prompt %d, system %d)", model, streaming ? "stream" : "json", prompt.length, systemPrompt.length);
 
+  const ac = new AbortController();
+  req.on("close", () => { if (!res.headersSent) { ac.abort(); console.log("[proxy] client disconnected, aborting"); } });
+
   let pingInterval;
   try {
     // For streaming: send headers + keepalive pings while claude -p works
@@ -273,7 +295,7 @@ async function handleRequest(req, res) {
       }, 15_000);
     }
 
-    const result = await runClaudeSerialized(prompt, systemPrompt, model);
+    const result = await runClaudeSerialized(prompt, systemPrompt, model, ac.signal);
     if (pingInterval) clearInterval(pingInterval);
     const ms = Date.now() - t0;
     console.log("[proxy] %s %dms in=%d out=%d", result.isError ? "ERR" : "OK", ms, result.usage.input_tokens, result.usage.output_tokens);
