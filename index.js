@@ -187,7 +187,15 @@ function runClaude(prompt, systemPrompt, model, signal) {
 
     proc.on("close", () => {
       if (tmpFile) try { unlinkSync(tmpFile); } catch {}
-      const text = textParts.join("") || resultText;
+      let text = textParts.join("") || resultText;
+      // Strip hallucinated human turns — the model sometimes continues
+      // past its own response and generates a fake next "Human:" message.
+      const humanTurnRe = /\n\n?(?:Human|H):\s*(?:Conversation info|```json)/;
+      const hallIdx = text.search(humanTurnRe);
+      if (hallIdx > 0) {
+        console.log("[proxy] stripped hallucinated human turn at char %d", hallIdx);
+        text = text.slice(0, hallIdx).trimEnd();
+      }
       if (!text && !resultText) {
         reject(new Error(`claude exited: ${stderr.slice(0, 200)}`));
         return;
